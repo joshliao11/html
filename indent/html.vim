@@ -2,52 +2,24 @@
 " General: "{{{
 " File:		html.vim (Vimscript #2075)
 " Author:	Andy Wokula <anwoku@yahoo.de>
-" Last Change:	2008 Apr 28
-" Version:	0.6
+" Last Change:	2014 Jan 27
+" Rev Days:     18
+" Version:	0.10
 " Vim Version:	Vim7
 " Description:
 "   Improved version of the distributed html indent script, faster on a
 "   range of lines.
 "
-" Customization:
-"   This section is about variables you can set in your vimrc.
-"
-" - You can set the indent for the first line after <script> and <style>
-"   tags (default "zero"):
-"
-"	:let g:html_indent_script1 = "inc"
-" 	:let g:html_indent_style1 = "inc"
-"
-"	VALUE	MEANING
-"	"zero"	zero indent	    
-"	"auto"	auto indent (same indent as the blocktag)
-"	"inc"	auto indent + one indent step
-"
-" - Many tags increase the indent for what follows per default (search below
-"   for "IndAdder Calls").  You can add further tags with
-"
-"	:let g:html_indent_inctags = "html,body,head,tbody"
-"
-"   You can also remove such tags with
-"
-"	:let g:html_indent_autotags = "th,td,tr,tfoot,thead"
-"
-"   Default value is empty for both variables.  Note: the default "inctags"
-"   are defined once per session.
-"
-" Detail:
-"   Calculation of indent inside "block tags" with "alien" content:
-"	TAG	   INDENT EXPR	    WHEN APPLICABLE
-"	<script> : {customizable}   if first line of block
-"		 : cindent(v:lnum)  if attributes empty or contain "java"
-"		 : -1		    else (vbscript, tcl, ...)
-"	<style>  : {customizable}   if first line of block
-"		 : GetCSSIndent()   else
-"	<!-- --> : -1
-"
 " Credits:
 "	indent/html.vim (2006 Jun 05) from J. Zellner
 "	indent/css.vim (2006 Dec 20) from N. Weibull
+"
+" History:
+" 2014 Jan 27	(v0.10) added b:html_indent_usestate; and a bug fix
+" 2012 Oct 21	(v0.9) added support for shiftwidth()
+" 2011 Sep 09	(v0.8) added HTML5 tags (thx to J. Zuckerman)
+" 2008 Apr 28	(v0.6) revised customization
+" 2008 Mar 09	(v0.5) fixed 'indk' issue (thx to C.J. Robinson)
 " }}}
 
 " Init Folklore, check user settings (2nd time ++) "{{{
@@ -64,25 +36,34 @@ let b:undo_indent = "set inde< indk<| unlet b:indent"
 
 " Load Once:
 if exists("*HtmlIndent")
-    call s:CheckUserSettings()
+    call HtmlIndent_CheckUserSettings()
     finish
+endif
+
+" Patch 7.3.694
+if exists('*shiftwidth')
+    let s:ShiftWidth = function('shiftwidth')
+else
+    func! s:ShiftWidth()
+	return &shiftwidth
+    endfunc
 endif
 
 let s:cpo_save = &cpo
 set cpo-=C
- "}}}
+"}}}
 
-func! s:CheckUserSettings() "{{{
+func! HtmlIndent_CheckUserSettings() "{{{
     if exists("g:html_indent_inctags")
-	call call("s:IndAdder", split(g:html_indent_inctags, ","))
+	call s:AddITags(split(g:html_indent_inctags, ","))
     endif
     if exists("g:html_indent_autotags")
-	call call("s:NoIndAdder", split(g:html_indent_autotags, ","))
+	call s:RemoveITags(split(g:html_indent_autotags, ","))
     endif
 
     let indone = {"zero": 0
 		\,"auto": "indent(prevnonblank(v:lnum-1))"
-		\,"inc": "b:indent.blocktagind + &shiftwidth"}
+		\,"inc": "b:indent.blocktagind + s:ShiftWidth()"}
     if exists("g:html_indent_script1")
 	let s:js1indent = get(indone, g:html_indent_script1, indone.zero)
     endif
@@ -100,23 +81,28 @@ let s:endtags = [0,0,0,0,0,0,0,0]   " some places unused
 let s:newstate = {}
 let s:countonly = 0
  "}}}
-func! s:IndAdder(tag, ...) "{{{
-    if a:0 == 0
-	let val = 1
-    elseif a:1 >= 2 && a:1 < 10
-	let val = a:1
-	let s:endtags[val-2] = "</".a:tag.">"
-    else
-	call s:IndAdder(a:tag)
-	call map(copy(a:000), 's:IndAdder(v:val)')
+func! s:AddITags(taglist) "{{{
+    for itag in a:taglist
+	let s:indent_tags[itag] = 1
+	let s:indent_tags['/'.itag] = -1
+    endfor
+endfunc "}}}
+func! s:AddBlockTag(tag, id, ...) "{{{
+    if !(a:id >= 2 && a:id < 2+len(s:endtags))
 	return
     endif
-    let s:indent_tags[a:tag] = val
-    let s:indent_tags['/'.a:tag] = -val
+    let s:indent_tags[a:tag] = a:id
+    if a:0 == 0
+	let s:indent_tags['/'.a:tag] = -a:id
+	let s:endtags[a:id-2] = "</".a:tag.">"
+    else
+	let s:indent_tags[a:1] = -a:id
+	let s:endtags[a:id-2] = a:1
+    endif
 endfunc "}}}
-func! s:NoIndAdder(...) "{{{
+func! s:RemoveITags(taglist) "{{{
     " remove itags (protect blocktags from being removed)
-    for itag in a:000
+    for itag in a:taglist
 	if !has_key(s:indent_tags, itag) || s:indent_tags[itag] != 1
 	    continue
 	endif
@@ -126,31 +112,34 @@ func! s:NoIndAdder(...) "{{{
 	endif
     endfor
 endfunc "}}}
-" IndAdder Calls: {{{
+" Add Indent Tags: {{{
 if !exists("s:indent_tags")
     let s:indent_tags = {}
 endif
-call s:IndAdder('a', 'abbr', 'acronym', 'address', 'b', 'bdo', 'big')
-call s:IndAdder('blockquote', 'button', 'caption', 'center', 'cite', 'code')
-call s:IndAdder('colgroup', 'del', 'dfn', 'dir', 'div', 'dl', 'em')
-call s:IndAdder('fieldset', 'font', 'form', 'frameset', 'h1', 'h2', 'h3')
-call s:IndAdder('h4', 'h5', 'h6')
-" call s:IndAdder('html')
-call s:IndAdder('i', 'iframe', 'ins', 'kbd', 'label', 'legend', 'map')
-call s:IndAdder('menu', 'noframes', 'noscript', 'object', 'ol', 'optgroup')
-call s:IndAdder('q', 's', 'samp', 'select', 'small', 'span', 'strong')
-call s:IndAdder('sub', 'sup', 'table', 'textarea', 'title', 'tt', 'u', 'ul')
-call s:IndAdder('var')
-call s:IndAdder('th', 'td', 'tr', 'tfoot', 'thead')
+
+" old tags:
+call s:AddITags(['a', 'abbr', 'acronym', 'address', 'b', 'bdo', 'big',
+    \ 'blockquote', 'button', 'caption', 'center', 'cite', 'code', 'colgroup',
+    \ 'del', 'dfn', 'dir', 'div', 'dl', 'em', 'fieldset', 'font', 'form',
+    \ 'frameset', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'i', 'iframe', 'ins', 'kbd',
+    \ 'label', 'legend', 'map', 'menu', 'noframes', 'noscript', 'object', 'ol',
+    \ 'optgroup', 'q', 's', 'samp', 'select', 'small', 'span', 'strong', 'sub',
+    \ 'sup', 'table', 'textarea', 'title', 'tt', 'u', 'ul', 'var', 'th', 'td',
+    \ 'tr', 'tfoot', 'thead'])
+
+" tags added 2011 Sep 09 (especially HTML5 tags):
+call s:AddITags(['area', 'article', 'aside', 'audio', 'bdi', 'canvas',
+    \ 'command', 'datalist', 'details', 'embed', 'figure', 'footer',
+    \ 'header', 'group', 'keygen', 'mark', 'math', 'meter', 'nav', 'output',
+    \ 'progress', 'ruby', 'section', 'svg', 'texture', 'time', 'video',
+    \ 'wbr', 'text'])
+
 "}}}
-" Block Tags: contain alien content "{{{
-call s:IndAdder('pre', 2)
-call s:IndAdder('script', 3)
-call s:IndAdder('style', 4)
-" Exception: handle comment delimiters <!--...--> like block tags
-let s:indent_tags["<!--"] = 5
-let s:indent_tags['-->'] = -5
-let s:endtags[5-2] = "-->"
+" Add Block Tags: contain alien content "{{{
+call s:AddBlockTag('pre', 2)
+call s:AddBlockTag('script', 3)
+call s:AddBlockTag('style', 4)
+call s:AddBlockTag('<!--', 5, '-->')
 "}}}
 
 func! s:CountITags(...) "{{{
@@ -188,6 +177,11 @@ func! s:CheckTag(itag) "{{{
 	else
 	    let s:nextrel -= 1
 	endif
+	" if s:curind >= 1
+	"     let s:curind -= 1
+	" else
+	"     let s:nextrel -= 1
+	" endif
     elseif ind == 1
 	" opening tag
 	if s:block != 0
@@ -215,7 +209,7 @@ func! s:Blocktag(blocktag, ind) "{{{
 	endif
 	let s:newstate.blocklnr = v:lnum
 	" save allover indent for the endtag
-	let s:newstate.blocktagind = b:indent.baseindent + (s:nextrel + s:curind) * &shiftwidth
+	let s:newstate.blocktagind = b:indent.baseindent + (s:nextrel + s:curind) * s:ShiftWidth()
 	if a:ind == 3
 	    return "SCRIPT"    " all except this must be lowercase
 	    " line is to be checked again for the type attribute
@@ -240,15 +234,16 @@ func! s:FreshState(lnum) "{{{
     " 1..a:lnum-1, initial calculating (here!) can be slow, but updating is
     " fast (incremental).
     " State:
-    " 	lnum		last indented line == prevnonblank(a:lnum - 1)
-    " 	block = 0	a:lnum located within special tag: 0:none, 2:<pre>,
+    "	lnum		last indented line == prevnonblank(a:lnum - 1)
+    "	block = 0	a:lnum located within special tag: 0:none, 2:<pre>,
     "			3:<script>, 4:<style>, 5:<!--
     "	baseindent	use this indent for line a:lnum as a start - kind of
     "			autoindent (if block==0)
-    " 	scripttype = ''	type attribute of a script tag (if block==3)
-    " 	blocktagind	indent for current opening (get) and closing (set)
+    "	scripttype = ''	type attribute of a script tag (if block==3)
+    "	blocktagind	indent for current opening (get) and closing (set)
     "			blocktag (if block!=0)
     "	blocklnr	lnum of starting blocktag (if block!=0)
+    "	inattr		line {lnum} starts with attributes of a tag
     let state = {}
     let state.lnum = prevnonblank(a:lnum - 1)
     let state.scripttype = ""
@@ -256,6 +251,7 @@ func! s:FreshState(lnum) "{{{
     let state.block = 0
     let state.baseindent = 0
     let state.blocklnr = 0
+    let state.inattr = 0
 
     if state.lnum == 0
 	return state
@@ -294,7 +290,7 @@ func! s:FreshState(lnum) "{{{
 	" check preceding tags in the line:
 	let s:altline = tagline[: stopcol-2]
 	call s:CountITags(1)
-	let state.blocktagind = indent(stopline) + (s:curind + s:nextrel) * &shiftwidth
+	let state.blocktagind = indent(stopline) + (s:curind + s:nextrel) * s:ShiftWidth()
 	return state
     elseif stopline == state.lnum
 	" handle special case: previous line (= state.lnum) contains a
@@ -305,7 +301,7 @@ func! s:FreshState(lnum) "{{{
 	    let [bline, bcol] = searchpos('<'.blocktag[1:].'\>', "bW")
 	    let s:altline = tolower(getline(bline)[: bcol-2])
 	    call s:CountITags(1)
-	    let state.baseindent = indent(bline) + (s:nextrel+s:curline) * &shiftwidth
+	    let state.baseindent = indent(bline) + (s:nextrel+s:curind) * s:ShiftWidth()
 	    return state
 	endif
     endif
@@ -320,7 +316,7 @@ func! s:FreshState(lnum) "{{{
 	" check preceding tags in the line:
 	let s:altline = tolower(getline(comline)[: comcol-2])
 	call s:CountITags(1)
-	let state.blocktagind = indent(comline) + (s:curind + s:nextrel) * &shiftwidth
+	let state.blocktagind = indent(comline) + (s:curind + s:nextrel) * s:ShiftWidth()
 	return state
     endif
 
@@ -337,18 +333,18 @@ func! s:FreshState(lnum) "{{{
 	    let s:altline = tolower(getline(comline)[: comcol-2])
 	endif
 	call s:CountITags(1)
-	let state.baseindent = indent(comline) + (s:nextrel+s:curline) * &shiftwidth
+	let state.baseindent = indent(comline) + (s:nextrel+s:curind) * s:ShiftWidth()
 	return state
 	" TODO check tags that follow "-->"
     endif
 
     " else no comments
     call s:CountITags(1)
-    let state.baseindent = indent(state.lnum) + s:nextrel * &shiftwidth
+    let state.baseindent = indent(state.lnum) + s:nextrel * s:ShiftWidth()
     " line starts with end tag
     let swendtag = match(s:altline, '^\s*</') >= 0
     if !swendtag
-	let state.baseindent += s:curind * &shiftwidth
+	let state.baseindent += s:curind * s:ShiftWidth()
     endif
     return state
 endfunc "}}}
@@ -390,10 +386,10 @@ func! s:CSSIndent() "{{{
 	" indent for first content line after comments
 	return eval(s:css1indent)
     endif
-    let ind = indent(pnum) + s:css_countbraces(pnum, 1) * &sw
+    let ind = indent(pnum) + s:css_countbraces(pnum, 1) * s:ShiftWidth()
     let pline = getline(pnum)
     if pline =~ '}\s*$'
-	let ind -= (s:css_countbraces(pnum, 0) - (pline =~ '^\s*}')) * &sw
+	let ind -= (s:css_countbraces(pnum, 0) - (pline =~ '^\s*}')) * s:ShiftWidth()
     endif
     return ind
 endfunc "}}}
@@ -438,17 +434,16 @@ endfunc "}}}
 
 func! HtmlIndent() "{{{
     let s:curline = tolower(getline(v:lnum))
+    let indentunit = s:ShiftWidth()
 
     let s:newstate = {}
     let s:newstate.lnum = v:lnum
 
-    " is the first non-blank in the line the start of a tag?
+    " does the line start with a closing tag?
     let swendtag = match(s:curline, '^\s*</') >= 0
 
-    if prevnonblank(v:lnum-1) == b:indent.lnum && s:usestate
-	" use state (continue from previous line)
-    else
-	" start over (know nothing)
+    if prevnonblank(v:lnum-1) != b:indent.lnum || (exists("b:html_indent_usestate") && !b:html_indent_usestate)
+	" start over, don't use state
 	let b:indent = s:FreshState(v:lnum)
     endif
 
@@ -463,11 +458,11 @@ func! HtmlIndent() "{{{
 	    let s:curline = strpart(s:curline, blockend+strlen(endtag))
 	    call s:CountITags()
 	    if swendtag && b:indent.block != 5
-		let indent = b:indent.blocktagind + s:curind * &shiftwidth
-		let s:newstate.baseindent = indent + s:nextrel * &shiftwidth
+		let indent = b:indent.blocktagind + s:curind * indentunit
+		let s:newstate.baseindent = indent + s:nextrel * indentunit
 	    else
 		let indent = s:Alien{b:indent.block}()
-		let s:newstate.baseindent = b:indent.blocktagind + s:nextrel * &shiftwidth
+		let s:newstate.baseindent = b:indent.blocktagind + s:nextrel * indentunit
 	    endif
 	    call extend(b:indent, s:newstate, "force")
 	    return indent
@@ -484,11 +479,11 @@ func! HtmlIndent() "{{{
 	let s:newstate.block = b:indent.block
 	call s:CountITags()
 	if swendtag
-	    let indent = b:indent.baseindent + s:curind * &shiftwidth
-	    let s:newstate.baseindent = indent + s:nextrel * &shiftwidth
+	    let indent = b:indent.baseindent + s:curind * indentunit
+	    let s:newstate.baseindent = indent + s:nextrel * indentunit
 	else
 	    let indent = b:indent.baseindent
-	    let s:newstate.baseindent = indent + (s:curind + s:nextrel) * &shiftwidth
+	    let s:newstate.baseindent = indent + (s:curind + s:nextrel) * indentunit
 	endif
 	call extend(b:indent, s:newstate, "force")
 	return indent
@@ -498,12 +493,12 @@ endfunc "}}}
 
 " check user settings (first time), clear cpo, Modeline: {{{1
 
-" com! -nargs=* IndHtmlLocal <args>
+" DEBUG:
+com! -nargs=* IndHtmlLocal <args>
 
-call s:CheckUserSettings()
+call HtmlIndent_CheckUserSettings()
 
 let &cpo = s:cpo_save
 unlet s:cpo_save
 
 " vim:set fdm=marker ts=8:
-
